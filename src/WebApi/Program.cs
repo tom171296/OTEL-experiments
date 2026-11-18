@@ -26,5 +26,6 @@ app.MapGet("/weather", (ILogger<Program> logger) =>
     logger.LogInformation("Weather requested");
     return new[] { "Sunny", "Cloudy", "Rainy" };
 });
+app.MapGet("/forecast", () => new[] { "Warm", "Cool", "Windy" });
 
 app.Run();
