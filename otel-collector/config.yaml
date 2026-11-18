@@ -1,0 +1,104 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  adaptive_tail_sampling: 
+    # Upper bound on time a trace can sit in the buffer before its decision is
+    # forced. Acts as a safety net for traces that never see a root span.
+    trace_timeout: 30s
+
+    # Pause between a triggering event (root span arrival or trace timeout) and
+    # the actual decision evaluation. Allows in-flight straggler spans to land
+    # before the trace is decided.
+    decision_delay: 2s
+
+    # Maximum number of traces held in the in-memory buffer.
+    num_traces: 50000
+
+    # Maximum spans a single trace may accumulate before it is decided
+    # immediately over the spans buffered so far. Bounds the memory one giant
+    # trace can hold; num_traces and eviction only bound the trace count.
+    # Defaults to 10000; 0 disables the cap.
+    span_limit: 10000
+
+    decision_cache:
+      sampled_cache_size: 10000      # 0 disables the sampled cache
+      non_sampled_cache_size: 10000  # 0 disables the not-sampled cache
+
+    rules:
+      # First-match: the first rule whose conditions all match selects the sampler.
+      - name: keep-errors
+        conditions:
+          - "span.status.code == STATUS_CODE_ERROR"
+        sampler:
+          type: always_sample
+
+      - name: webapi-service
+        conditions:
+          - 'resource.attributes["service.name"] == "webapi"'
+        sampler:
+          type: adaptive_percentage
+          goal_percentage: 5
+          fingerprint_attributes:
+            - span.attributes["http.request.method"]
+            - span.attributes["http.route"]
+          adjustment_interval: 15s
+          weight: 0.5
+
+      # Catch-all: no conditions, always matches.
+      - name: default
+        sampler:
+          type: adaptive_percentage
+          goal_percentage: 20
+          fingerprint_attributes:
+            - resource.attributes["service.name"]
+            - span.attributes["http.response.status_code"]
+
+  # tail_sampling:
+  #   decision_wait: 10s
+  #   num_traces: 50000
+  #   expected_new_traces_per_sec: 1000
+  #   policies:
+  #     - name: errors
+  #       type: status_code
+  #       status_code:
+  #         status_codes: [ERROR]
+  #     - name: slow-traces
+  #       type: latency
+  #       latency:
+  #         threshold_ms: 1000
+  #     - name: baseline
+  #       type: probabilistic
+  #       probabilistic:
+  #         sampling_percentage: 10
+  batch: {}
+
+exporters:
+  # Forward everything to the Aspire dashboard OTLP endpoint
+  otlp/aspire:
+    endpoint: ${env:DASHBOARD_OTLP_ENDPOINT}
+    tls:
+      insecure: ${env:DASHBOARD_OTLP_TLS_INSECURE}
+      insecure_skip_verify: ${env:DASHBOARD_OTLP_TLS_INSECURE_SKIP_VERIFY}
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [adaptive_tail_sampling, batch]
+      exporters: [otlp/aspire, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/aspire, debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/aspire, debug]
